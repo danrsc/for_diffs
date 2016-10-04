@@ -1,4 +1,4 @@
-function MakeExperimentFromStimuliFile( ...
+function MakeExperimentFromStimuliFileFlexQuestions( ...
     subject, ...
     pathWhereOutputSubjectDirShouldBeCreated, ... 
     sentenceFile, ...
@@ -43,16 +43,17 @@ function MakeExperimentFromStimuliFile( ...
     %   3 = Onset of each individual word thereafter (WORD MARKER)
     %   4 = Question Markers
     %   5 = Onset of the first word of a passage (PASSAGE MARKER)
-    %   254/255 = Answer prompts Y+N or N+Y (respectively)
     %
-    %   5 0 3 0 3 0 3 0 3 0 2 0 3 0 3 0 3 0 4 0 254 0 
+    %   5 0 3 0 3 0 3 0 3 0 2 0 3 0 3 0 3 0 4 0 253 0 
     %   is a 2 sentence passage where the first sentence has
     %   5 words and the second sentence has 4 words. 
-    %   The passage has a Q/A after it
+    %   The passage has a Q/A after it, which has the 3rd permutation (in
+    %   lexigraphical order) of the answer choices
     %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
     
     numRepetitionsForPauseFmt = 'numRepetitionsPause%d';
     numSecondsPauseFmt = 'numSecondsPause%d';
+    questionAnswerFmt = 'answer%d';
     
     [   passages, configuration ] = ...
         ReadTaggedTabDelimitedFile( sentenceFile );
@@ -78,7 +79,17 @@ function MakeExperimentFromStimuliFile( ...
         end
         
         numPauses = numPauses + 1;
-    end    
+    end
+    
+    numAnswers = 1;
+    while (true)
+        if (~isfield(passages{1}, sprintf(questionAnswerFmt, numAnswers)))
+            numAnswers = numAnswers - 1;
+            break;
+        end
+        
+        numAnswers = numAnswers + 1;
+    end
     
     % Seeds the random number generator so that every time you rerun this
     % script for this participant, it will generate the same output code.
@@ -108,7 +119,7 @@ function MakeExperimentFromStimuliFile( ...
     for indexBlock = 1:numBlocks
         blockAssignments{indexBlock} = nan(0, 2);
     end
-    
+
     for indexPassage = 1:length(passages)
         for indexPause = 1:numPauses
             repField = sprintf(numRepetitionsForPauseFmt, indexPause);
@@ -132,6 +143,7 @@ function MakeExperimentFromStimuliFile( ...
                 end
             end
         end
+                
     end
     
     % now randomly reorder the passages within the blocks
@@ -189,14 +201,7 @@ function MakeExperimentFromStimuliFile( ...
         
     end
     
-    yesQuestion = 1;
-    noQuestion = 2;
-    questionTypes = cell(numBlocks, 1);
-    
-    leftRight = 1;
-    rightLeft = 2;
-    answerLeftRight = cell(numBlocks, 1);
-    
+    answerOrder = cell(numBlocks, 1);
     blockStreamSizes = zeros(numBlocks);
     
     for indexBlock = 1:numBlocks
@@ -206,8 +211,7 @@ function MakeExperimentFromStimuliFile( ...
         % passage
         %
         
-        questionTypes{indexBlock} = zeros(size(blockAssignments{indexBlock}, 1), 1);
-        answerLeftRight{indexBlock} = zeros(size(blockAssignments{indexBlock}, 1), 1);
+        answerOrder{indexBlock} = zeros(size(blockAssignments{indexBlock}, 1), numAnswers);
         
         % calculate the number of questions in this block
         numQuestions = configuration.questionRate * size(blockAssignments{indexBlock}, 1);
@@ -252,13 +256,19 @@ function MakeExperimentFromStimuliFile( ...
             allPresentations = ...
                 find(blockAssignments{indexBlock}(:, 1) == passageId);
             indexAssignment = allPresentations(indexChosenPresentation);
-            if (rand(1, 1) < 0.5)
-                questionTypes{indexBlock}(indexAssignment) = noQuestion;
-                questionWordCount = length(passages{passageId}.noQuestion);
-            else
-                questionTypes{indexBlock}(indexAssignment) = yesQuestion;
-                questionWordCount = length(passages{passageId}.yesQuestion);
+        
+            numAnswersCurrent = 0;
+            for indexAnswer = 1:numAnswers
+                answerField = sprintf(questionAnswerFmt, indexAnswer);
+                if (~isempty(passages{passageId}.(answerField)))
+                    numAnswersCurrent = numAnswersCurrent + 1;
+                else
+                    break;
+                end
             end
+            answerOrder{indexBlock}(indexAssignment, 1:numAnswersCurrent) = randperm(numAnswersCurrent);
+
+            questionWordCount = length(passages{passageId}.question);
             
             % words plus in-betweens
             sizeQuestions = ...
@@ -385,16 +395,19 @@ function MakeExperimentFromStimuliFile( ...
             % if there is a question it gets cut in half
             finalRestPeriod = configuration.itiStimuli;
                
-            if (questionTypes{indexBlock}(indexInBlock) ~= 0)
+            if (answerOrder{indexBlock}(indexInBlock, 1) ~= 0)
                 
                 finalRestPeriod = configuration.itiStimuliPostQuestion;
-                
-                if (questionTypes{indexBlock}(indexInBlock) == noQuestion)
-                    questionWords = passage.noQuestion;
-                elseif (questionTypes{indexBlock}(indexInBlock) == yesQuestion)
-                    questionWords = passage.yesQuestion;
-                else
-                    error('Unknown question type');
+                questionWords = passage.question;
+                currentAnswerOrder = answerOrder{indexBlock}(indexInBlock, :);
+                currentAnswerOrder = currentAnswerOrder(currentAnswerOrder ~= 0);
+                answerChoiceText = '';
+                for indexAnswer = 1:length(currentAnswerOrder)
+                    if (indexAnswer > 1)
+                       answerChoiceText = sprintf('%s%s', answerChoiceText, configuration.answerSeparator);
+                    end
+                    answerField = sprintf(questionAnswerFmt, currentAnswerOrder(indexAnswer));
+                    answerChoiceText = sprintf('%s%s', answerChoiceText, passage.(answerField));
                 end
                 
                 for indexQuestionWord = 1:length(questionWords)
@@ -447,26 +460,45 @@ function MakeExperimentFromStimuliFile( ...
                 
                 end
                 
-                % Part of assigning presentation of either 'Y + N', 'N + Y'
-                % during the task.  This sets to either 0 or 1, and then 1 is added
-                % during the assignment below, so that it is always either index 1
-                % or 2 (ie 'Y + N' or "N + Y')
-                if (rand(1) > 0.5)
-                    questionPromptTrigger = configuration.questionPromptLeftRight;
-                    textQuestionPrompt = configuration.textQuestionPromptLeftRight;
-                    answerLeftRight{indexBlock}(indexInBlock) = leftRight;
-                else
-                    questionPromptTrigger = configuration.questionPromptRightLeft;
-                    textQuestionPrompt = configuration.textQuestionPromptRightLeft;
-                    answerLeftRight{indexBlock}(indexInBlock) = rightLeft;
-                end
-
                 [ blockOutput, indexBlockOutput, cumulativeTimestamp ] = ...
                     WriteOutput( ...
                         blockOutput, ...
                         indexBlockOutput, ...
                         cumulativeTimestamp, ...
-                        textQuestionPrompt, ... % stimulusText, ...
+                        '+', ... % stimulusText, ...
+                        0, ... % trigger, ...
+                        configuration.itiQuestionAnswer); 
+                
+                % we treat the ordering as digits of a base-m number with m the number of answer
+                % options to encode the exact order. This assumes that we
+                % have < 4 answers because we need to fit into 256 and some
+                % other triggers are taken
+                if length(currentAnswerOrder) > 3
+                    % we could consider adding additional information by
+                    % modifying the trigger on the fixation cross; I'm not
+                    % doing that right now because it might mess up
+                    % downstream code and I don't think we need this at the
+                    % moment
+                    error(['The encoding scheme used for recording the order of the answer choices ' ...
+                        'will not work for more than 3 answer choices. We need a new encoding scheme :(']);
+                end
+                
+                indexLexigraphic = LexigraphicPermutationIndex(currentAnswerOrder);
+                % I've aribtrarily decided that we should error if we
+                % cannot reserve the first 10 triggers
+                if indexLexigraphic > configuration.questionTriggerBasis - 10
+                    error(['Unable to encode the answer order while reserving' ...
+                        ' enough triggers given the current questionTriggerBasis'])
+                end
+                
+                questionPromptTrigger = configuration.questionTriggerBasis - indexLexigraphic;
+                
+                [ blockOutput, indexBlockOutput, cumulativeTimestamp ] = ...
+                    WriteOutput( ...
+                        blockOutput, ...
+                        indexBlockOutput, ...
+                        cumulativeTimestamp, ...
+                        answerChoiceText, ... % stimulusText, ...
                         questionPromptTrigger, ... % trigger, ...
                         configuration.timePerAsk ); % duration, ...
                     
@@ -530,21 +562,15 @@ function MakeExperimentFromStimuliFile( ...
             end
             
             questionInfo = '';
-            if (questionTypes{indexBlock}(indexAssignment) ~= 0)
-                if (answerLeftRight{indexBlock}(indexAssignment) == leftRight)
-                    answerType = 'left-right';
-                elseif (answerLeftRight{indexBlock}(indexAssignment) == rightLeft)
-                    answerType = 'right-left';
-                else
-                    error('Unknown answerLeftRight type %d', answerLeftRight{indexBlock}(indexAssignment));
-                end
-                
-                if (questionTypes{indexBlock}(indexAssignment) == yesQuestion)
-                    questionInfo = sprintf(', Q:yes, %s', answerType);
-                elseif (questionTypes{indexBlock}(indexAssignment) == noQuestion)
-                    questionInfo = sprintf(', Q:no, %s', answerType);
-                else
-                    error('Unkown question type %d', questionTypes{indexBlock}(indexAssignment));
+            if (answerOrder{indexBlock}(indexAssignment, 1) ~= 0)
+                currentOrder = answerOrder{indexBlock}(indexAssignment, :);
+                currentOrder = currentOrder(currentOrder ~= 0);
+                questionInfo = ', Q:';
+                for indexOrder = 1:length(currentOrder)
+                    if (indexOrder > 1)
+                        questionInfo = sprintf('%s,', questionInfo);
+                    end
+                    questionInfo = sprintf('%s%d', questionInfo, currentOrder(indexOrder));
                 end
             end
             
@@ -612,35 +638,27 @@ function MakeExperimentFromStimuliFile( ...
     
     end
     
-    leftRightYes = 0;
-    rightLeftYes = 0;
-    leftRightNo = 0;
-    rightLeftNo = 0;
+    countPosition1 = zeros(numAnswers, 1);
+    numQuestions = 0;
     
     for indexBlock = 1:length(experiment)
+        
+        indicatorQuestion = answerOrder{indexBlock}(:, 1) ~= 0;
+        numQuestions = numQuestions + nnz(indicatorQuestion);
     
-        indicatorYes = questionTypes{indexBlock} == yesQuestion;
-        indicatorNo = questionTypes{indexBlock} == noQuestion;
-
-        leftRightYes = ...
-            leftRightYes + nnz(answerLeftRight{indexBlock}(indicatorYes) == leftRight);
-        
-        rightLeftYes = ...
-            rightLeftYes + nnz(answerLeftRight{indexBlock}(indicatorYes) == rightLeft);
-        
-        leftRightNo = ...
-            leftRightNo + nnz(answerLeftRight{indexBlock}(indicatorNo) == leftRight);
-        
-        rightLeftNo = ...
-            rightLeftNo + nnz(answerLeftRight{indexBlock}(indicatorNo) == rightLeft);
+        for indexAnswer = 1:numAnswers
+            indicator1 = answerOrder{indexBlock}(:, indexAnswer) == 1;
+            countPosition1(indexAnswer) = countPosition1(indexAnswer) + nnz(indicator1);
+        end
         
     end
     
-    fprintf('Yes questions: left-right: %d, right-left %d\n', ...
-        leftRightYes, rightLeftYes);
-    fprintf('No questions: left-right: %d, right-left %d\n', ...
-        leftRightNo, rightLeftNo);
-
+    for indexAnswer = 1:numAnswers
+        fprintf('Questions with answer 1 in position %d: %d\n', indexAnswer, countPosition1(indexAnswer));
+    end
+    
+    fprintf('Total questions: %d\n', numQuestions);
+    
     experimentOutputPath = fullfile(subjectDir, 'sentenceBlock.mat');
     save(experimentOutputPath, 'experiment');
 
