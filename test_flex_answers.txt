@@ -95,8 +95,6 @@ keyval_double:questionRate=0.1
 % The trigger will be 256 - 4 = 252
 keyval_double:questionTriggerBasis=256
 keyval_double:timePerAsk=2
-keyval_bool:isSeparateAnswerScreen=true
-keyval_double:answerTrigger=6
 keyval_double:itiQuestionAnswer=1
 
 % when we see this trigger, we will pause before it according to the pause columns
