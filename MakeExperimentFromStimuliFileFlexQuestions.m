@@ -119,11 +119,14 @@ function MakeExperimentFromStimuliFileFlexQuestions( ...
     for indexBlock = 1:numBlocks
         blockAssignments{indexBlock} = nan(0, 2);
     end
+    
+    numPresentationsPerPassage = zeros(length(passages), 1);
 
     for indexPassage = 1:length(passages)
         for indexPause = 1:numPauses
             repField = sprintf(numRepetitionsForPauseFmt, indexPause);
             numRepetitions = passages{indexPassage}.(repField);
+            numPresentationsPerPassage(indexPassage) = numPresentationsPerPassage(indexPassage) + numRepetitions;
             
             numRepsAllBlocks = floor(cast(numRepetitions,'double')/numBlocks);
             for indexBlock = 1:numBlocks
@@ -198,76 +201,96 @@ function MakeExperimentFromStimuliFileFlexQuestions( ...
         % apply the order we found above
         blockAssignments{indexBlock} = ...
             blockAssignments{indexBlock}(bestOrder{indexBlock}, :);
-        
+    
     end
     
-    answerOrder = cell(numBlocks, 1);
     blockStreamSizes = zeros(numBlocks);
     
+    % calculate the number of questions in the experiment
+    numQuestions = configuration.questionRate * sum(numPresentationsPerPassage);
+    
+    % randomly choose whether to round up based on remainder
+    % so expected value is questionRate
+    remainder = numQuestions - floor(numQuestions);
+    numQuestions = floor(numQuestions);
+    if (rand(1, 1) < remainder)
+        numQuestions = numQuestions + 1;
+    end
+    
+    % assign passages to questions
+    numQuestionsPerPassage = zeros(length(numPresentationsPerPassage), 1);
+    while (sum(numQuestionsPerPassage) < numQuestions)
+        availablePassages = 1:length(numQuestionsPerPassage);
+        availablePassages = availablePassages(numQuestionsPerPassage < numPresentationsPerPassage);
+        if (isempty(availablePassages))
+            error('Cannot fulfill desired number of questions - code issue')
+        end
+        picks = randperm( ... 
+            length(availablePassages), min([numQuestions - sum(numQuestionsPerPassage), length(availablePassages)]));
+        pickedPassages = availablePassages(picks);
+        numQuestionsPerPassage(pickedPassages) = numQuestionsPerPassage(pickedPassages) + 1;
+    end
+    
+    % creata a matrix of block, passage in presentation order
+    blockPassageIndices = nan(sum(numPresentationsPerPassage), 2);
+    indexPresentation = 1;
     for indexBlock = 1:numBlocks
-        
-        %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-        % Take a random sample weighted by the number of occurrences of a
-        % passage
-        %
-        
-        answerOrder{indexBlock} = zeros(size(blockAssignments{indexBlock}, 1), numAnswers);
-        
-        % calculate the number of questions in this block
-        numQuestions = configuration.questionRate * size(blockAssignments{indexBlock}, 1);
-        
-        % randomly choose whether to round up based on remainder
-        % so expected value is questionRate
-        remainder = numQuestions - floor(numQuestions);
-        numQuestions = floor(numQuestions);
-        if (rand(1, 1) < remainder)
-            numQuestions = numQuestions + 1;
+        for indexBlockPresentation = 1:size(blockAssignments{indexBlock}, 1)
+            blockPassageIndices(indexPresentation, 1) = indexBlock;
+            blockPassageIndices(indexPresentation, 2) = blockAssignments{indexBlock}(indexBlockPresentation, 1);
+            indexPresentation = indexPresentation + 1;
         end
-        
-        % count the number of each passage
-        % also count the tokens
-        uniquePassageCount = containers.Map('KeyType', 'double', 'ValueType', 'double');
-        sizeTokens = 0;
-        sizeBetweenTokenBlanks = 0;
-        for indexAssignment = 1:size(blockAssignments{indexBlock}, 1)
-            idPassage = blockAssignments{indexBlock}(indexAssignment, 1);
-            sizeTokens = sizeTokens + length(passages{idPassage}.stimulus);
-            sizeBetweenTokenBlanks = sizeBetweenTokenBlanks + length(passages{idPassage}.stimulus) - 1;
-            if (isKey(uniquePassageCount, idPassage))
-                countPassage = uniquePassageCount(idPassage);
-            else
-                countPassage = 0;
-            end
-            uniquePassageCount(idPassage) = countPassage + 1;
-        end
-        
-        uniquePassageIds = cell2mat(uniquePassageCount.keys());
-        uniquePassageCounts = cell2mat(uniquePassageCount.values());
-        
-        % take a weighted random sample
-        questionPassageIndices = ReservoirSample(uniquePassageCounts, numQuestions);
-        
-        % choose which presentation of the sampled passages
-        % will get a question
-        sizeQuestions = 0;
-        for indexQuestion = 1:length(questionPassageIndices)
-            passageId = uniquePassageIds(indexQuestion);
-            indexChosenPresentation = randperm(uniquePassageCounts(indexQuestion), 1);
-            allPresentations = ...
-                find(blockAssignments{indexBlock}(:, 1) == passageId);
-            indexAssignment = allPresentations(indexChosenPresentation);
-        
+    end
+    
+    answerOrder = zeros(size(blockPassageIndices, 1), numAnswers);
+    
+    % assign passage questions to presentations of that passage
+    for indexPassage = 1:length(numQuestionsPerPassage)
+        if (numQuestionsPerPassage(indexPassage) > 0)
+            allPresentations = find(blockPassageIndices(:, 2) == indexPassage);
+            picks = randperm(length(allPresentations), numQuestionsPerPassage(indexPassage));
+            
             numAnswersCurrent = 0;
             for indexAnswer = 1:numAnswers
                 answerField = sprintf(questionAnswerFmt, indexAnswer);
-                if (~isempty(passages{passageId}.(answerField)))
+                if (~isempty(passages{indexPassage}.(answerField)))
                     numAnswersCurrent = numAnswersCurrent + 1;
                 else
                     break;
                 end
             end
-            answerOrder{indexBlock}(indexAssignment, 1:numAnswersCurrent) = randperm(numAnswersCurrent);
 
+            for indexPick = 1:length(picks)
+                answerOrder(allPresentations(picks(indexPick)), 1:numAnswersCurrent) = randperm(numAnswersCurrent);
+            end
+            
+        end
+    end
+    
+    for indexBlock = 1:numBlocks
+        
+        % count the number of each passage
+        % also count the tokens
+        presentationPassageIds = blockPassageIndices(indexBlock == blockPassageIndices(:, 1), 2);
+        presentationAnswerOrders = answerOrder(indexBlock == blockPassageIndices(:, 1), :);
+        
+        sizeTokens = 0;
+        sizeBetweenTokenBlanks = 0;
+        for indexAssignment = 1:size(blockAssignments{indexBlock}, 1)
+            idPassage = presentationPassageIds(indexAssignment);
+            sizeTokens = sizeTokens + length(passages{idPassage}.stimulus);
+            sizeBetweenTokenBlanks = sizeBetweenTokenBlanks + length(passages{idPassage}.stimulus) - 1;
+        end
+        
+        questionIndices = find(presentationAnswerOrders(:, 1) ~= 0);
+        
+        % choose which presentation of the sampled passages
+        % will get a question
+        sizeQuestions = 0;
+        for indexQuestion = 1:length(questionIndices)
+            indexPresentation = questionIndices(indexQuestion);
+            passageId = presentationPassageIds(indexPresentation);
+            
             questionWordCount = length(passages{passageId}.question);
             
             % words plus in-betweens
@@ -299,6 +322,8 @@ function MakeExperimentFromStimuliFileFlexQuestions( ...
     for indexBlock = 1:numBlocks
         
         clear('blockOutput');
+        
+        blockAnswerOrder = answerOrder(indexBlock == blockPassageIndices(:, 1), :);
         
         % final experiment structure that is interpretable by
         % psych Toolbox
@@ -395,11 +420,11 @@ function MakeExperimentFromStimuliFileFlexQuestions( ...
             % if there is a question it gets cut in half
             finalRestPeriod = configuration.itiStimuli;
                
-            if (answerOrder{indexBlock}(indexInBlock, 1) ~= 0)
+            if (blockAnswerOrder(indexInBlock, 1) ~= 0)
                 
                 finalRestPeriod = configuration.itiStimuliPostQuestion;
                 questionWords = passage.question;
-                currentAnswerOrder = answerOrder{indexBlock}(indexInBlock, :);
+                currentAnswerOrder = blockAnswerOrder(indexInBlock, :);
                 currentAnswerOrder = currentAnswerOrder(currentAnswerOrder ~= 0);
                 answerChoiceText = '';
                 for indexAnswer = 1:length(currentAnswerOrder)
@@ -532,6 +557,8 @@ function MakeExperimentFromStimuliFileFlexQuestions( ...
     blockPassageCounts = cell(length(experiment), 1);
     for indexBlock = 1:length(experiment)
         
+        blockAnswerOrder = answerOrder(indexBlock == blockPassageIndices(:, 1), :);
+        
         blockDuration = 0;
         blockPassageCount = zeros(length(passages), numPauses);
         
@@ -562,8 +589,8 @@ function MakeExperimentFromStimuliFileFlexQuestions( ...
             end
             
             questionInfo = '';
-            if (answerOrder{indexBlock}(indexAssignment, 1) ~= 0)
-                currentOrder = answerOrder{indexBlock}(indexAssignment, :);
+            if (blockAnswerOrder(indexAssignment, 1) ~= 0)
+                currentOrder = blockAnswerOrder(indexAssignment, :);
                 currentOrder = currentOrder(currentOrder ~= 0);
                 questionInfo = ', Q:';
                 for indexOrder = 1:length(currentOrder)
@@ -643,11 +670,13 @@ function MakeExperimentFromStimuliFileFlexQuestions( ...
     
     for indexBlock = 1:length(experiment)
         
-        indicatorQuestion = answerOrder{indexBlock}(:, 1) ~= 0;
+        blockAnswerOrder = answerOrder(indexBlock == blockPassageIndices(:, 1), :);
+        
+        indicatorQuestion = blockAnswerOrder(:, 1) ~= 0;
         numQuestions = numQuestions + nnz(indicatorQuestion);
     
         for indexAnswer = 1:numAnswers
-            indicator1 = answerOrder{indexBlock}(:, indexAnswer) == 1;
+            indicator1 = blockAnswerOrder(:, indexAnswer) == 1;
             countPosition1(indexAnswer) = countPosition1(indexAnswer) + nnz(indicator1);
         end
         
